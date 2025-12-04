@@ -1,0 +1,24 @@
+{
+  "name": "modular-baileys-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "axios": "^1.13.2",
+    "caliph-api": "^1.0.1",
+    "cfonts": "^3.3.1",
+    "ffmpeg": "^0.0.4",
+    "nodejs": "^0.0.0",
+    "npm": "^11.6.4",
+    "pino": "^9.5.0",
+    "pm2": "^6.0.14",
+    "qrcode": "^1.5.4",
+    "wa-sticker-formatter": "^4.4.4"
+  }
+}

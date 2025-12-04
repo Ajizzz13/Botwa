@@ -1,0 +1,11 @@
+{
+  "apiKeys": [
+    "AIzaSyB--Cj_ofc8nHaVvNYqrKqlE0KTvdTkuQA",
+    "AIzaSyCOHubVDnYQ7ucWcjTp3_Ao_fNO-MDJC4U",
+    "AIzaSyCosA9B-DeAeJkyh4_8Gmdyr4kjtH1-C2I",
+    "AIzaSyDLvYkGNSd40DcvduQWUJLB1iMHwhEFRHU"
+  ],
+  "userModels": {
+    "6281389993921@s.whatsapp.net": "gemini-1.5-flash"
+  }
+}
