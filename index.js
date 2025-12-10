@@ -5,8 +5,27 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const cfonts = require('cfonts');
-const qrcode = require('qrcode'); 
-const { isMuted } = require('./lib/mute_store'); // Import Helper Mute
+const qrcode = require('qrcode');
+const { isMuted } = require('./lib/mute_store');
+
+// === DATABASE KONTAK MANUAL ===
+const storePath = path.join(__dirname, 'baileys_store.json');
+let contacts = {};
+
+// Load kontak saat start
+try {
+    if (fs.existsSync(storePath)) {
+        contacts = JSON.parse(fs.readFileSync(storePath));
+    }
+} catch (e) { 
+    console.error('⚠️ Gagal memuat database kontak:', e); 
+}
+
+const saveContacts = () => {
+    try {
+        fs.writeFileSync(storePath, JSON.stringify(contacts, null, 2));
+    } catch (e) { }
+};
 
 const commands = new Map();
 const functionsDir = path.join(__dirname, 'function');
@@ -38,6 +57,7 @@ const question = (text) => {
 const color = (text, code) => `\x1b[${code}m${text}\x1b[0m`;
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
+// Helper Decode JID
 const decodeJid = (jid) => {
     if (!jid) return jid;
     if (/:\d+@/gi.test(jid)) {
@@ -109,7 +129,7 @@ async function connectToWhatsApp(usePairingCode = false) {
         logger: logger,
         browser: ["Ubuntu", "Chrome", "20.0.04"],
         markOnlineOnConnect: true,
-        syncFullHistory: false
+        syncFullHistory: true 
     });
 
     if (usePairingCode && !sock.authState.creds.registered) {
@@ -118,20 +138,35 @@ async function connectToWhatsApp(usePairingCode = false) {
         console.log(color(`\nPairing Code: ${code}\n`, '33'));
     }
 
+    // === EVENT HANDLER: SIMPAN KONTAK ===
+    sock.ev.on('contacts.upsert', (update) => {
+        for (let contact of update) {
+            let id = decodeJid(contact.id);
+            if (contacts[id]) Object.assign(contacts[id], contact);
+            else contacts[id] = contact;
+        }
+        saveContacts();
+    });
+
+    sock.ev.on('contacts.update', (update) => {
+        for (let contact of update) {
+            let id = decodeJid(contact.id);
+            if (contacts[id]) Object.assign(contacts[id], contact);
+        }
+        saveContacts();
+    });
+
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
         if (qr && !usePairingCode) {
             console.log(color('\n[SYS] Scan QR Code di bawah ini:', '36'));
             qrcode.toString(qr, { type: 'terminal', small: true }, function (err, url) {
                 if (!err) console.log(url);
             });
         }
-
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom) ?
                 lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut : true;
-            
             console.log(color('[SYS] Connection closed, reconnecting...', '31')); 
             if (shouldReconnect) connectToWhatsApp(usePairingCode);
         } else if (connection === 'open') {
@@ -141,7 +176,6 @@ async function connectToWhatsApp(usePairingCode = false) {
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        console.log(color('[SYS] Session/Encryption Keys Refreshed', '90')); 
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -149,33 +183,55 @@ async function connectToWhatsApp(usePairingCode = false) {
         const m = messages[0];
         if (!m.message) return;
 
-        // --- ANTI LAG ---
         let msgTimestamp = m.messageTimestamp;
         if (typeof msgTimestamp === 'object' && msgTimestamp !== null) {
             msgTimestamp = msgTimestamp.low || msgTimestamp.toNumber ? msgTimestamp.toNumber() : parseInt(msgTimestamp);
         }
         if (msgTimestamp < START_TIME) return;
 
-        // --- LOGIKA MUTE USER (AUTO DELETE) ---
         const senderRaw = m.key.participant || m.key.remoteJid;
         const isGroup = m.key.remoteJid.endsWith('@g.us');
         
         if (isGroup && isMuted(senderRaw)) {
-            try {
-                // Cek apakah bot admin sebelum mencoba hapus (untuk mencegah crash log)
-                // Tapi untuk performa, kita try-catch saja langsung delete
-                await sock.sendMessage(m.key.remoteJid, { delete: m.key });
-                console.log(color(`[MUTE] Pesan dari ${senderRaw} dihapus otomatis.`, '31'));
-                return; // Stop proses agar command tidak jalan
-            } catch (e) {
-                // Bot bukan admin atau gagal hapus
-            }
+            try { await sock.sendMessage(m.key.remoteJid, { delete: m.key }); return; } catch (e) {}
         }
-        // --------------------------------------
 
         let rawJid = m.key.fromMe ? sock.user.id : (m.key.participant || m.key.remoteJid);
         const senderJid = decodeJid(rawJid);
         const senderNumber = senderJid.split('@')[0];
+
+        // === LOGIKA AUTO-SAVE LID ===
+        
+        // 1. Cek cara biasa (apakah nomor ini sudah ada di settings?)
+        let isOwner = settings.ownerNumber.includes(senderNumber) || m.key.fromMe;
+
+        // 2. Jika BELUM owner, dan pengirimnya pakai LID
+        if (!isOwner && senderJid.endsWith('@lid')) {
+            // Kita cari: Apakah ada data kontak bot yang menghubungkan LID ini dengan salah satu Nomor HP Owner?
+            
+            // Loop semua nomor owner yang sudah terdaftar
+            for (const ownerPhone of settings.ownerNumber) {
+                // Skip jika yang di settings itu sendiri adalah LID (panjang > 15)
+                if (ownerPhone.length > 15) continue; 
+
+                const ownerJid = ownerPhone + '@s.whatsapp.net';
+                const contactData = contacts[ownerJid]; // Ambil data kontak Owner dari database
+
+                // Jika data kontak ketemu, DAN LID di kontak tersebut sama dengan LID pengirim saat ini
+                if (contactData && contactData.lid === senderJid) {
+                    console.log(color(`[SYS] DETEKSI: ${senderNumber} adalah LID milik Owner ${ownerPhone}`, '32'));
+                    
+                    // --- INI PERMINTAAN ANDA: SIMPAN KE SETTINGS ---
+                    settings.ownerNumber.push(senderNumber); // Masukkan LID ke array
+                    saveSettings(); // Tulis ke file settings.json
+                    console.log(color(`[SYS] SUKSES: LID ${senderNumber} otomatis ditambahkan ke settings.json`, '32'));
+                    // -----------------------------------------------
+
+                    isOwner = true; // Berikan akses owner
+                    break; // Selesai, hentikan loop
+                }
+            }
+        }
 
         const msgType = Object.keys(m.message)[0];
         const body = msgType === 'conversation' ? m.message.conversation :
@@ -184,7 +240,6 @@ async function connectToWhatsApp(usePairingCode = false) {
                      msgType === 'videoMessage' ? m.message.videoMessage.caption : '';
         
         const pushName = m.pushName || 'Unknown';
-        const isOwner = settings.ownerNumber.includes(senderNumber) || m.key.fromMe;
         
         if (settings.mode === 'self' && !isOwner) return;
 
@@ -203,7 +258,12 @@ async function connectToWhatsApp(usePairingCode = false) {
 
         if (commands.has(cmdName)) {
             try {
-                await commands.get(cmdName).execute(sock, m, args, { settings, saveSettings, isOwner });
+                await commands.get(cmdName).execute(sock, m, args, { 
+                    settings, 
+                    saveSettings, 
+                    isOwner, 
+                    store: contacts 
+                });
             } catch (err) {
                 console.error(`[ERR] Command ${cmdName}:`, err);
             }
